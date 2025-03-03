@@ -1,0 +1,233 @@
+#!/usr/bin/env bash
+#shellcheck disable=SC2034,SC1091,SC2155
+set -euo pipefail
+readonly VERSION='3.0.0'
+readonly PRG0=$(readlink -en -- "$0")
+readonly -- PRGDIR="${PRG0%/*}" PRG="${PRG0##*/}"
+#shellcheck disable=SC2034,SC1091,SC2155
+#[ -t 2 ] && declare -- RED=$'\033[0;31m' YELLOW=$'\033[0;33m' GREEN=$'\033[0;32m' NOCOLOR=$'\033[0m' || declare -- RED='' YELLOW='' GREEN='' NOCOLOR=''
+declare -ix VERBOSE=1 DRYRUN=1
+_log_() { 
+  local level=$1 prefix=$2
+  shift 2
+  local msg fd=2
+  [[ $level == '' ]] && fd=1
+  for msg in "$@"; do 
+    printf '%s: %s%s\n' "$PRG" "$prefix" "$msg" >&$fd
+  done
+}
+vecho() { ((VERBOSE)) && _log_ '' '' "$@"; }
+vinfo() { ((VERBOSE)) && _log_ info 'info: ' "$@"; }
+vwarn() { ((VERBOSE)) && _log_ warn 'warn: ' "$@"; }
+error() { _log_ error 'error: ' "$@"; }
+die() { local -i exitcode=${1:-1}; shift; (($#)) && error "$@"; exit "$exitcode"; }
+grep() { /usr/bin/grep "$@"; }
+#find() { /usr/bin/find "$@"; }
+#ssh() { /usr/bin/ssh "$@"; }
+#scp() { /usr/bin/scp "$@"; }
+declare -fx grep
+noarg() { if (($# < 2)) || [[ ${2:0:1} == '-' ]]; then die 2 "Missing argument for option '$1'"; fi; true; }
+# Requires root or sudo
+((EUID)) && { sudo -ln &>/dev/null || die 1 "Requires root, or non-interactive sudo privileges."; exec sudo -n "$0" "$@"; exit 1; }
+# Requires host okusi
+#[[ $HOSTNAME == 'okusi' ]] || die 1 "Can only run on development host 'okusi'"
+#trim() { local v="$*"; v="${v#"${v%%[![:blank:]]*}"}"; echo -n "${v%"${v##*[![:blank:]]}"}"; }
+#remblanks() { local str="$1"; while [[ "$str" =~ ([[:space:]]{2,}) ]]; do str="${str//${BASH_REMATCH[1]}/ }"; done; trim "$str"; }
+#isodate() { date +'%Y-%m-%d %H:%M:%S'; }
+decp() { declare -p "$@" | sed 's/^declare -[a-z-]* //'; }
+#fqcommand() { local command="$1"; local apt_package="${2:-}"; command -v "$command" &>/dev/null && { command -v "$command"; return 0; }; [[ -z "$apt_package" ]] && die 1 "Command '$command' not found and no package specified"; vinfo "Installing package: $apt_package"; sudo apt-get install -y "$apt_package" >/dev/null 2>&1; command -v "$command" &>/dev/null || die 1 "Failed to install $command"; command -v "$command"; }
+# ----------------------------------------------------------------------------------------
+
+xcleanup() { local -i exitcode=${1:-0}; rm -rf "${BITBIN:-jUnK}"; [[ -t 0 ]] && printf '\e[?25h'; exit "$exitcode"; }
+trap 'xcleanup $?' SIGTERM SIGINT EXIT
+
+usage() {
+  local -i exitcode=${1:-0}
+  local -- helptext=$(cat <<EOT
+$PRG $VERSION - Fast Delete Large Directory Trees
+
+Description:
+  Fast-delete ALL contents of a directory.
+  Useful for deleting extremely large directories where
+  'rm -rf' doesn't cut it. Requires root. Be very careful.
+
+  Uses 'rsync --delete' from empty temporary directory.
+  Optimizes deletion strategy based on filesystem type.
+  
+  *Default mode is --dryrun.*
+
+Usage:
+  $PRG [Options] dirname[ dirname [...]]
+
+  dirname   Name/s of the directory trees to annihilate
+
+Options:
+  -n, --dryrun          Dryrun mode (default)
+  -N, --notdryrun       Execute deletion
+                        $(decp DRYRUN)
+
+  -T, --timeout N       Maximum time $PRG can run (default: no timeout)
+                        Format: 2m (minutes), 4h (hours), etc.
+                        $(decp TIMEOUT)
+  -i, --ionice 0|1|2|3  Use nice/ionice for I/O priority
+                        0=no nice (default)
+                        1=highest priority, 3=lowest
+                        $(decp IONICE)
+
+  -w, --wait-for-rsync  Do not execute until rsync is no longer running
+  -r, --rsync-verbose   Use extra verbose mode for rsync
+                        $(decp rsync_verbose)
+                         
+  -v, --verbose         Be Verbose (default)
+  -q, --quiet           Be Not Verbose (recommended with -N)
+                        $(decp VERBOSE)
+
+  -V, --version         Print '$PRG $VERSION' and exit
+  -h, --help            Print usage and exit
+
+Examples:
+  $PRG -T 4h /really/big/dir        # With 4 hour timeout
+
+  $PRG -Nri 1 /bloody/big/dir       # Non-dryrun with highest I/O priority 
+
+  $PRG -wqN -i 1 "/oh/my/god/2025-06-{01..04}"  # Multiple directories
+
+EOT
+)
+  ((exitcode)) && >&2 echo "$helptext" || echo "$helptext"
+  [[ -z "${1:-}" ]] && return
+  exit "$exitcode"
+}
+
+is_mount_point() { mountpoint -q "$1"; }
+
+get_fs_type() {
+  local path="$1"
+  df -PT "$path" | awk 'NR==2 {print $2}'
+}
+
+declare -- BITBIN=/tmp/bitbin-"$$"-"$RANDOM"
+
+main() {
+  local NukeDir
+  local verbose='v' dryrun='n' rsync_verbose=''
+  local -i IONICE=0 wait_for_rsync=0
+  local TIMEOUT=''
+  local RSYNCbin='' BASHbin='' TIMEOUTbin='' NICEbin='' IONICEbin=''
+  local -a RSYNC=()
+
+  local -a NukeDirs=()
+  while (($#)); do case "$1" in
+    -i|--ionice)    noarg "$@"; shift; IONICE=$1 ;;
+    -T|--timeout)   noarg "$@"; shift; TIMEOUT=$1;;
+    -w|--wait-for-rsync)
+                    wait_for_rsync=1 ;;
+    -n|--dryrun)    DRYRUN=1; dryrun=n ;;
+    -N|--notdryrun) DRYRUN=0; dryrun='' ;;
+    -v|--verbose)   VERBOSE=1; verbose=v ;;
+    -q|--quiet)     VERBOSE=0; verbose='' ;;
+    -r|--rsync-verbose) rsync_verbose+='v' ;;
+    -V|--version)   echo "$PRG $VERSION"; exit 0;;
+    -h|--help)      usage |less -FX; exit 0 ;;
+    -[iTdDnNvqrVh]*) #shellcheck disable=SC2046 # expand aggregated short options
+                    set -- '' $(printf -- "-%c " $(grep -o . <<<"${1:1}")) "${@:2}";;
+    -*)             die 22 "Invalid option $1" ;;
+    *)              NukeDirs+=( "${1}/" ) ;;
+  esac; shift; done
+
+  (( ${#NukeDirs[0]} == 0 )) && { error "No directory specified." ; usage 1; } 
+
+  [[ $PWD == '/' ]] && die 1 "Cannot execute from root directory"
+
+  RSYNCbin=$(command -v rsync) || die 1 "'rsync' not found"
+  BASHbin=$(command -v bash) || die 1 "'bash' not found"
+  if ((IONICE)); then
+    # Validate ionice priority level (0-3)
+    if [[ $IONICE -lt 0 || $IONICE -gt 3 ]]; then
+      die 1 "Invalid ionice priority value: $IONICE (must be 0-3)"
+    fi
+    IONICEbin=$(command -v ionice) || die 1 "'ionice' not found"
+    NICEbin=$(command -v nice) || die 1 "'nice' not found"
+  fi
+  if [[ -n $TIMEOUT ]]; then
+    TIMEOUTbin=$(command -v timeout) || die 1 "'timeout' command not found"
+  fi
+
+  pgrep -cx rsync >/dev/null && vwarn "'rsync' is currently running $(pgrep -cx rsync) processes"
+
+  # make bitbin in /run if possible
+  if df -t tmpfs | grep -q '\s/run$'; then
+    BITBIN=/run/"$PRG"/bitbin-"$$"-"$RANDOM"
+  fi
+  mkdir -p "$BITBIN" || die 1 "Could not create tempdir $BITBIN."
+  vinfo "BITBIN=$BITBIN"
+
+  for NukeDir in "${NukeDirs[@]}"; do
+    NukeDir=$(readlink -en "$NukeDir") || continue
+    [[ "$NukeDir" == '/' ]] && die 1 "ROOT directory CANNOT be specified!"
+    [[ -d "$NukeDir" ]] || { error "$NukeDir is not a directory!"; continue; }
+    is_mount_point "$NukeDir" && die 1 "Cannot delete a mount point '$NukeDir'!"
+
+    waitforrsync
+    
+    # We removed size estimation to improve performance on large directories
+
+    ((DRYRUN)) && vinfo "<DRYRUN>"
+
+    vwarn '***' "DELETING ALL CONTENTS OF $NukeDir" '***'
+
+    RSYNC=()
+    ((IONICE)) && \
+        RSYNC=( "$NICEbin" -n -19 "$IONICEbin" -c1 -n0 "${RSYNC[@]}" )
+    [[ -n $TIMEOUT ]] && \
+        RSYNC=( "$TIMEOUTbin" '--kill-after=1s' "$TIMEOUT" "${RSYNC[@]}" )
+
+    # Drop caches to free memory before deletion
+    ((DRYRUN)) || { sync && echo 3 > /proc/sys/vm/drop_caches; }
+
+    # Get filesystem type to optimize deletion strategy
+    local FS_TYPE=$(get_fs_type "$NukeDir")
+    vinfo "Filesystem type: $FS_TYPE"
+    
+    # Customize rsync options based on filesystem type
+    local DELETE_OPT="--delete-before"
+    local EXTRA_OPTS=("--no-inc-recursive" "--inplace")
+    
+    # XFS handles large deletes better with delete-during
+    [[ "$FS_TYPE" == "xfs" ]] && DELETE_OPT="--delete-during"
+    
+    # Btrfs performs better with different options
+    if [[ "$FS_TYPE" == "btrfs" ]]; then
+      DELETE_OPT="--delete-delay"
+      EXTRA_OPTS+=("--preallocate")
+    fi
+    
+    RSYNC+=( "$RSYNCbin" "-a${rsync_verbose}${dryrun}" "$DELETE_OPT" "${EXTRA_OPTS[@]}" "${BITBIN:-jUnK}/" "${NukeDir:-JuNk}/" )
+    vinfo "${RSYNC[*]}" "Executing..."
+
+    # For extremely large directories, run in chunks to avoid memory issues
+    if ((DRYRUN)); then
+      "${RSYNC[@]}"
+    else
+      "${RSYNC[@]}" && rmdir "${NukeDir:-jUnK}"
+      # Ensure kernel caches are cleared after deletion
+      sync
+    fi
+
+    ((DRYRUN)) && vinfo "</DRYRUN>"
+    vinfo "'$NukeDir' has $( ((DRYRUN)) && echo -n 'NOT ' || echo -n '')been nuked"
+  done
+}
+
+waitforrsync() {
+  if ((wait_for_rsync)); then
+    while pgrep -x rsync > /dev/null; do
+      vinfo "Waiting for rsync process to finish."
+      sleep 60
+    done
+  fi
+}
+
+
+main "$@"
+#fin
