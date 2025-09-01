@@ -254,7 +254,6 @@ EOF
     info "Installing from local directory: $source_dir"
   fi
   
-  # Install script
   install_script "$source_dir"
   
   # Install bash completion (don't fail if it doesn't work)
@@ -266,7 +265,6 @@ EOF
   echo "${GREEN}================================${RESET}"
   echo
   
-  # Verify installation
   verify_installation
   
   echo
@@ -274,5 +272,5 @@ EOF
   info "To uninstall, run: sudo $0 --uninstall"
 }
 
-# Run main function
 main "$@"
+#fin
