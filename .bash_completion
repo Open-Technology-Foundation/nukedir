@@ -1,0 +1,36 @@
+# Bash completion for nukedir
+_nukedir() {
+    local cur prev opts
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+    # Available options
+    opts="-n --dryrun -N --notdryrun -T --timeout -i --ionice -w --wait-for-rsync -r --rsync-verbose -v --verbose -q --quiet -V --version -h --help"
+
+    # Handle specific options that need arguments
+    case "$prev" in
+        -i|--ionice)
+            COMPREPLY=( $(compgen -W "0 1 2 3" -- "$cur") )
+            return 0
+            ;;
+        -T|--timeout)
+            # Suggest timeout format examples
+            COMPREPLY=( $(compgen -W "1m 5m 10m 30m 1h 2h 4h 8h 12h 24h" -- "$cur") )
+            return 0
+            ;;
+        *)
+            ;;
+    esac
+
+    # If current word starts with -, complete with options
+    if [[ "$cur" == -* ]]; then
+        COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
+        return 0
+    fi
+
+    # Complete with directories only
+    COMPREPLY=( $(compgen -d -- "$cur") )
+}
+
+complete -F _nukedir nukedir
