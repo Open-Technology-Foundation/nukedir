@@ -27,26 +27,46 @@ A high-performance utility for rapidly deleting extremely large directory trees 
 
 ## Installation
 
+### Quick Install (One-liner)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Open-Technology-Foundation/nukedir/main/install.sh | sudo bash
+```
+
+Or with wget:
+```bash
+wget -qO- https://raw.githubusercontent.com/Open-Technology-Foundation/nukedir/main/install.sh | sudo bash
+```
+
+### Manual Installation
+
 1. Clone this repository:
    ```bash
    git clone https://github.com/Open-Technology-Foundation/nukedir.git
    cd nukedir
    ```
 
-2. Make the script executable:
+2. Run the installer:
    ```bash
-   chmod +x nukedir
+   sudo ./install.sh
    ```
 
-3. Optionally, install to system PATH:
-   ```bash
-   sudo cp nukedir /usr/local/bin/
-   ```
+### What Gets Installed
 
-4. Verify installation:
-   ```bash
-   nukedir --version
-   ```
+- `nukedir` script → `/usr/local/bin/nukedir`
+- Bash completion → `/etc/bash_completion.d/nukedir`
+
+### Uninstall
+
+```bash
+sudo ./install.sh --uninstall
+```
+
+### Verify Installation
+
+```bash
+nukedir --version
+```
 
 ## Usage
 
