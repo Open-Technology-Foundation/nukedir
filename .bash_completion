@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # Bash completion for nukedir
 _nukedir() {
     local cur prev opts
