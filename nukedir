@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#shellcheck disable=SC2015
 # Fast-delete large directory trees using rsync optimization
 set -euo pipefail
 shopt -s inherit_errexit shift_verbose extglob nullglob
@@ -37,12 +38,8 @@ die()   { (($# > 1)) && error "${@:2}" ||:; exit "${1:-0}"; }
 # --------------------------------------------------------------------------------
 # Utility functions
 
-# Command overrides (both used in script)
-grep() { command grep "$@"; }
-pgrep() { command pgrep "$@"; }
-
 # Argument validation
-noarg() { if (($# < 2)) || [[ ${2:0:1} == '-' ]]; then die 2 "Missing argument for option ${1@Q}"; fi; true; }
+noarg() { (($# > 1)) && [[ ${2:0:1} != '-' ]] || die 2 "Option ${1@Q} requires an argument"; }
 
 # This script requires root or sudo
 if ((EUID)); then
@@ -60,7 +57,7 @@ trap 'cleanup $?' SIGTERM SIGINT EXIT
 
 # --------------------------------------------------------------------------------
 usage() {
-  cat <<EOT
+  cat <<HELP
 $SCRIPT_NAME $VERSION - Fast Delete Large Directory Trees
 
 Description:
@@ -106,7 +103,7 @@ Examples:
 
   $SCRIPT_NAME -wqN -i 1 "/oh/my/god/2027-06-{01..04}"  # Multiple directories
 
-EOT
+HELP
 }
 
 is_mount_point() { mountpoint -q "$1"; }
@@ -127,7 +124,7 @@ wait_for_rsync() {
 
 declare -i DRY_RUN=1
 
-# Global temporary directory
+# Default global temporary directory
 declare -- BITBIN=/tmp/"$SCRIPT_NAME"-"$$"-"$RANDOM"
 
 main() {
@@ -155,12 +152,12 @@ main() {
     -[iTwnNvqrVh]*) #shellcheck disable=SC2046 # expand aggregated short options
                     set -- '' $(printf -- "-%c " $(grep -o . <<<"${1:1}")) "${@:2}";;
     -*)             die 22 "Invalid option ${1@Q}" ;;
-    *)              nuke_dirs+=( "${1}/" ) ;;
+    *)              nuke_dirs+=("$1"/) ;;
   esac; shift; done
 
   ((${#nuke_dirs[@]})) || die 1 'No directory specified.'
 
-  [[ $PWD == '/' ]] && die 1 'Cannot execute from root directory'  ||:
+  [[ $PWD != '/' ]] || die 1 'Cannot execute from root directory'
 
   rsync_bin=$(command -v rsync) || die 1 'rsync not found'
   if ((ionice)); then
@@ -188,7 +185,7 @@ main() {
 
   for nuke_dir in "${nuke_dirs[@]}"; do
     nuke_dir=$(realpath -e "$nuke_dir") || continue
-    [[ "$nuke_dir" == '/' ]] && die 1 'ROOT directory CANNOT be specified'
+    [[ "$nuke_dir" == '/' ]] && die 1 'ROOT directory CANNOT be specified' ||:
     [[ -d "$nuke_dir" ]] || { error "${nuke_dir@Q} is not a directory"; continue; }
     is_mount_point "$nuke_dir" && die 1 "Cannot delete a mount point ${nuke_dir@Q}" ||:
 
@@ -214,18 +211,18 @@ main() {
     info "Filesystem type: $fs_type"
 
     # Customize rsync options based on filesystem type
-    local -- delete_opt="--delete-before"
-    local -a extra_opts=("--no-inc-recursive" "--inplace")
+    local -- delete_opt='--delete-before'
+    local -a extra_opts=(--no-inc-recursive --inplace)
 
     # XFS handles large deletes better with delete-during
     if [[ "$fs_type" == xfs ]]; then
-      delete_opt="--delete-during"
+      delete_opt='--delete-during'
     fi
 
     # Btrfs performs better with different options
-    if [[ "$fs_type" == "btrfs" ]]; then
-      delete_opt="--delete-delay"
-      extra_opts+=("--preallocate")
+    if [[ "$fs_type" == btrfs ]]; then
+      delete_opt='--delete-delay'
+      extra_opts+=(--preallocate)
     fi
     
     rsync_cmd+=( "$rsync_bin" "-a${rsync_verbose}${dryrun}" "$delete_opt" "${extra_opts[@]}" "${BITBIN:-jUnK}/" "${nuke_dir:-JuNk}/" )
