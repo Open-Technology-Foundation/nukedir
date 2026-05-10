@@ -1,30 +1,28 @@
 #!/usr/bin/env bash
-#shellcheck disable=SC2015
 # Fast-delete large directory trees using rsync optimization
 set -euo pipefail
 shopt -s inherit_errexit shift_verbose extglob nullglob
 
-declare -r VERSION=3.1.0
+declare -r VERSION=3.1.2
 declare -r SCRIPT_NAME=nukedir
 
-# --------------------------------------------------------------------------------
 # Core message functions
 declare -i VERBOSE=1
+declare -i RSYNC_WAIT_SECONDS=${RSYNC_WAIT_SECONDS:-60}
 
 # Color support with terminal detection
-if [[ -t 2 ]]; then
-  declare -r RED=$'\033[0;31m' GREEN=$'\033[0;32m' YELLOW=$'\033[0;33m' CYAN=$'\033[0;36m' NC=$'\033[0m'
+if [[ -t 1 && -t 2 ]]; then
+  declare -r RED=$'\033[0;31m' YELLOW=$'\033[0;33m' CYAN=$'\033[0;36m' NC=$'\033[0m'
 else
-  declare -r RED='' GREEN='' YELLOW='' CYAN='' NC=''
+  declare -r RED='' YELLOW='' CYAN='' NC=''
 fi
 
 # Main message function using FUNCNAME for context
 _msg() {
-  local -- status="${FUNCNAME[1]}" prefix="$SCRIPT_NAME:" msg
-  case "$status" in
+  local -- prefix="$SCRIPT_NAME:" msg
+  case ${FUNCNAME[1]} in
     info)    prefix+=" ${CYAN}◉${NC}" ;;
     warn)    prefix+=" ${YELLOW}▲${NC}" ;;
-    success) prefix+=" ${GREEN}✓${NC}" ;;
     error)   prefix+=" ${RED}✗${NC}" ;;
   esac
   for msg in "$@"; do printf '%s %s\n' "$prefix" "$msg"; done
@@ -33,27 +31,21 @@ _msg() {
 info()  { ((VERBOSE)) || return 0; >&2 _msg "$@"; }
 warn()  { ((VERBOSE)) || return 0; >&2 _msg "$@"; }
 error() { >&2 _msg "$@"; }
-die()   { (($# > 1)) && error "${@:2}" ||:; exit "${1:-0}"; }
-
-# --------------------------------------------------------------------------------
-# Utility functions
+die()   { (($# < 2)) || error "${@:2}"; exit "${1:-0}"; }
 
 # Argument validation
-noarg() { (($# > 1)) && [[ ${2:0:1} != '-' ]] || die 2 "Option ${1@Q} requires an argument"; }
-
-# This script requires root or sudo
-if ((EUID)); then
-  sudo -ln &>/dev/null || die 1 'Requires root, or non-interactive sudo privileges.'
-  exec sudo -n "$0" "$@"
-  exit 1
-fi
-
-# Cleanup function
-cleanup() {
-  rm -rf "${BITBIN:-jUnK}"
-  exit "${1:-0}"
+noarg() {
+  if (($# < 2)) || [[ ${2:0:1} == '-' ]]; then
+    die 8 "Option ${1@Q} requires an argument"
+  fi
 }
-trap 'cleanup $?' SIGTERM SIGINT EXIT
+
+cleanup() {
+  local -i exitcode=${1:-$?}
+  trap - SIGINT SIGTERM EXIT  # prevent recursion
+  [[ -z ${BITBIN:-} ]] || rm -rf "$BITBIN"
+  exit "$exitcode"
+}
 
 # --------------------------------------------------------------------------------
 usage() {
@@ -114,12 +106,13 @@ get_fs_type() {
 }
 
 wait_for_rsync() {
-  if ((wait_for_rsync)); then
-    while pgrep -x rsync >/dev/null; do
-      info 'Waiting for rsync process to finish.'
-      sleep 60
-    done
-  fi
+  local -i enabled=${1:-0}
+  ((enabled)) || return 0
+  while pgrep -x rsync >/dev/null; do
+    info "Waiting $RSYNC_WAIT_SECONDS seconds for rsync process to finish."
+    sleep $RSYNC_WAIT_SECONDS
+  done
+  return 0
 }
 
 declare -i DRY_RUN=1
@@ -128,6 +121,14 @@ declare -i DRY_RUN=1
 declare -- BITBIN=/tmp/"$SCRIPT_NAME"-"$$"-"$RANDOM"
 
 main() {
+  trap 'cleanup $?' SIGINT SIGTERM EXIT
+
+  # This script requires root or sudo — self-escalate before consuming $@
+  if ((EUID)); then
+    sudo -ln &>/dev/null || die 13 'Requires root, or non-interactive sudo privileges.'
+    exec sudo -n "$0" "$@"
+  fi
+
   local -- nuke_dir
   local -- dryrun='n' rsync_verbose=''
   local -i ionice=0 wait_for_rsync=0
@@ -143,55 +144,63 @@ main() {
                     wait_for_rsync=1 ;;
     -n|--dryrun)    DRY_RUN=1; dryrun=n ;;
     -N|--notdryrun) DRY_RUN=0; dryrun='' ;;
-    -v|--verbose)   VERBOSE+=1 ;;
+    -v|--verbose)   VERBOSE=1 ;;
     -q|--quiet)     VERBOSE=0 ;;
     -r|--rsync-verbose)
                     rsync_verbose+='v' ;;
     -V|--version)   echo "$SCRIPT_NAME $VERSION"; return 0;;
     -h|--help)      usage; return 0 ;;
-    -[iTwnNvqrVh]*) #shellcheck disable=SC2046 # expand aggregated short options
-                    set -- '' $(printf -- "-%c " $(grep -o . <<<"${1:1}")) "${@:2}";;
+
+    --)             shift; nuke_dirs+=("$@"); break ;;
+    -[iTwnNvqrVh]?*)
+                    set -- "${1:0:2}" "-${1:2}" "${@:2}"; continue ;;
+
     -*)             die 22 "Invalid option ${1@Q}" ;;
     *)              nuke_dirs+=("$1"/) ;;
   esac; shift; done
 
-  ((${#nuke_dirs[@]})) || die 1 'No directory specified.'
+  ((${#nuke_dirs[@]})) || die 8 'No directory specified.'
 
-  [[ $PWD != '/' ]] || die 1 'Cannot execute from root directory'
+  [[ $PWD != '/' ]] || die 21 'Cannot execute from root directory'
 
-  rsync_bin=$(command -v rsync) || die 1 'rsync not found'
+  rsync_bin=$(command -v rsync) || die 18 'rsync not found'
   if ((ionice)); then
     # Validate ionice priority level (0-3)
     if ((ionice < 0 || ionice > 3)); then
-      die 1 "Invalid ionice priority value: $ionice (must be 0-3)"
+      die 9 "Invalid ionice priority value: $ionice (must be 0-3)"
     fi
-    ionice_bin=$(command -v ionice) || die 1 "'ionice' not found"
-    nice_bin=$(command -v nice) || die 1 "'nice' not found"
+    ionice_bin=$(command -v ionice) || die 18 "'ionice' not found"
+    nice_bin=$(command -v nice) || die 18 "'nice' not found"
   fi
   if [[ -n $timeout ]]; then
-    timeout_bin=$(command -v timeout) || die 1 "'timeout' command not found"
+    timeout_bin=$(command -v timeout) || die 18 "'timeout' command not found"
   fi
 
-  if pgrep -cx rsync >/dev/null; then
-    warn "'rsync' is currently running $(pgrep -cx rsync) processes"
+  local -i rsync_running
+  rsync_running=$(pgrep -cx rsync || true)
+  if ((rsync_running)); then
+    warn "'rsync' is currently running $rsync_running processes"
   fi
 
   # Make bitbin in /run if possible (tmpfs for better performance)
   if df -t tmpfs | grep -q '\s/run$'; then
     BITBIN=/run/"$SCRIPT_NAME"/bitbin-"$$"-"$RANDOM"
   fi
-  mkdir -p "$BITBIN" || die 1 "Could not create tempdir ${BITBIN@Q}"
+  mkdir -p "$BITBIN" || die 5 "Could not create tempdir ${BITBIN@Q}"
   info "BITBIN=$BITBIN"
 
   for nuke_dir in "${nuke_dirs[@]}"; do
-    nuke_dir=$(realpath -e "$nuke_dir") || continue
-    [[ "$nuke_dir" == '/' ]] && die 1 'ROOT directory CANNOT be specified' ||:
-    [[ -d "$nuke_dir" ]] || { error "${nuke_dir@Q} is not a directory"; continue; }
-    is_mount_point "$nuke_dir" && die 1 "Cannot delete a mount point ${nuke_dir@Q}" ||:
+    [[ -d $nuke_dir ]] || { error "${nuke_dir@Q} is not a directory"; continue; }
 
-    wait_for_rsync
+    nuke_dir=$(realpath -- "$nuke_dir")
 
-    ((! DRY_RUN)) || info '<DRY_RUN>'
+    [[ $nuke_dir != '/' ]] || die 22 'ROOT directory CANNOT be specified'
+
+    ! is_mount_point "$nuke_dir" || die 21 "Cannot delete a mount point ${nuke_dir@Q}"
+
+    wait_for_rsync "$wait_for_rsync"
+
+    ((!DRY_RUN)) || info '<DRY_RUN>'
 
     warn '***' "DELETING ALL CONTENTS OF ${nuke_dir@Q}" '***'
 
@@ -202,42 +211,48 @@ main() {
     if [[ -n $timeout ]]; then
       rsync_cmd=( "$timeout_bin" '--kill-after=1s' "$timeout" "${rsync_cmd[@]}" )
     fi
+
     # Drop caches to free memory before deletion
     ((DRY_RUN)) || { sync && echo 3 > /proc/sys/vm/drop_caches; }
 
     # Get filesystem type to optimize deletion strategy
     local -- fs_type
     fs_type=$(get_fs_type "$nuke_dir")
-    info "Filesystem type: $fs_type"
+    info "Filesystem type ${fs_type@Q}"
 
     # Customize rsync options based on filesystem type
     local -- delete_opt='--delete-before'
     local -a extra_opts=(--no-inc-recursive --inplace)
 
     # XFS handles large deletes better with delete-during
-    if [[ "$fs_type" == xfs ]]; then
+    if [[ $fs_type == xfs ]]; then
       delete_opt='--delete-during'
     fi
 
     # Btrfs performs better with different options
-    if [[ "$fs_type" == btrfs ]]; then
+    if [[ $fs_type == btrfs ]]; then
       delete_opt='--delete-delay'
       extra_opts+=(--preallocate)
     fi
     
-    rsync_cmd+=( "$rsync_bin" "-a${rsync_verbose}${dryrun}" "$delete_opt" "${extra_opts[@]}" "${BITBIN:-jUnK}/" "${nuke_dir:-JuNk}/" )
+    rsync_cmd+=(
+      "$rsync_bin" "-a${rsync_verbose}${dryrun}" "$delete_opt" "${extra_opts[@]}" \
+          "${BITBIN:-jUnK}/" "${nuke_dir:-JuNk}/"
+    )
     info "${rsync_cmd[*]}" 'Executing...'
 
     # For extremely large directories, run in chunks to avoid memory issues
     if ((DRY_RUN)); then
       "${rsync_cmd[@]}"
     else
-      "${rsync_cmd[@]}" && rmdir "${nuke_dir:-jUnK}" ||:
+      if "${rsync_cmd[@]}"; then
+        rmdir "${nuke_dir:-jUnK}" || warn "rmdir of ${nuke_dir@Q} failed (not empty?)"
+      fi
       # Ensure kernel caches are cleared after deletion
       sync
     fi
 
-    ((! DRY_RUN)) || info '</DRY_RUN>'
+    ((!DRY_RUN)) || info '</DRY_RUN>'
     info "'$nuke_dir' has $( ((DRY_RUN)) && echo -n 'NOT ' || echo -n '')been nuked"
   done
 }

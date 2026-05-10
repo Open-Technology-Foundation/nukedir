@@ -18,12 +18,12 @@ teardown() {
 
   run sudo "$NUKEDIR_SCRIPT" -n "$test_dir"
   assert_success
-  assert_output_contains "Filesystem type:"
+  assert_output_contains "Filesystem type "
 
   # Should show one of the common filesystem types
   [[ "$output" =~ ext4|xfs|btrfs|tmpfs|zfs ]] || {
-    # Or any other valid filesystem
-    [[ "$output" =~ "Filesystem type:" ]]
+    # Or any other valid filesystem — fall back to verifying the label is present
+    [[ "$output" =~ "Filesystem type " ]]
   }
 }
 
@@ -99,7 +99,7 @@ teardown() {
 
   run sudo "$NUKEDIR_SCRIPT" -n "$test_dir"
   assert_success
-  assert_output_contains "Filesystem type:"
+  assert_output_contains "Filesystem type "
 
   # Cleanup
   rm -rf "$test_dir"

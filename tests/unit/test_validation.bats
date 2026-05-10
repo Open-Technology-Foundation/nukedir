@@ -16,11 +16,9 @@ teardown() {
   local -- nonexistent_dir="$TEST_TEMP_DIR/does_not_exist"
 
   run sudo "$NUKEDIR_SCRIPT" -n "$nonexistent_dir"
-  # Script should handle non-existent directory gracefully
-  # realpath will output error to stderr
+  # Script should handle non-existent directory gracefully: log an error and continue
   assert_success
-  # Check for realpath error in output
-  [[ "$output" == *"realpath"* ]] || [[ "$output" == *"No such file"* ]]
+  assert_output_contains "is not a directory"
 }
 
 @test "nukedir rejects non-directory file" {
@@ -29,8 +27,8 @@ teardown() {
 
   run sudo "$NUKEDIR_SCRIPT" -n "$test_file"
   assert_success
-  # realpath outputs "Not a directory" error
-  [[ "$output" == *"realpath"* ]] || [[ "$output" == *"Not a directory"* ]]
+  # -d check fires on a regular file — same error path as nonexistent
+  assert_output_contains "is not a directory"
 }
 
 @test "nukedir handles directory with trailing slash" {
@@ -116,8 +114,8 @@ teardown() {
   assert_success
   # Valid directory should be processed
   assert_output_contains "$valid_dir"
-  # Invalid directory should produce realpath error
-  [[ "$output" == *"realpath"* ]] || [[ "$output" == *"No such file"* ]]
+  # Invalid directory should produce "is not a directory" error and continue
+  assert_output_contains "is not a directory"
 }
 
 @test "nukedir handles empty directory" {
@@ -151,7 +149,7 @@ teardown() {
 
   run sudo "$NUKEDIR_SCRIPT" -n "$test_dir"
   assert_success
-  assert_output_contains "Filesystem type:"
+  assert_output_contains "Filesystem type "
 }
 
 @test "nukedir shows rsync command in verbose mode" {

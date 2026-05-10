@@ -20,14 +20,15 @@ teardown() {
   run sudo "$NUKEDIR_SCRIPT" --version
   assert_success
   assert_output_contains "nukedir"
-  assert_output_contains "3.1.0"
+  # Match any semver — avoids drift when VERSION is bumped
+  [[ "$output" =~ [0-9]+\.[0-9]+\.[0-9]+ ]]
 }
 
 @test "nukedir -V displays version number (short form)" {
   run sudo "$NUKEDIR_SCRIPT" -V
   assert_success
   assert_output_contains "nukedir"
-  assert_output_contains "3.1.0"
+  [[ "$output" =~ [0-9]+\.[0-9]+\.[0-9]+ ]]
 }
 
 @test "nukedir --help displays usage information" {
@@ -99,13 +100,13 @@ teardown() {
 @test "nukedir detects missing argument for -i option" {
   run sudo "$NUKEDIR_SCRIPT" -i
   assert_failure
-  assert_output_contains "Missing argument"
+  assert_output_contains "requires an argument"
 }
 
 @test "nukedir detects missing argument for -T option" {
   run sudo "$NUKEDIR_SCRIPT" -T
   assert_failure
-  assert_output_contains "Missing argument"
+  assert_output_contains "requires an argument"
 }
 
 @test "nukedir accepts valid ionice level 0" {
@@ -193,5 +194,53 @@ teardown() {
   test_dir=$(create_test_dir "aggregated_quiet" 5 1)
 
   run sudo "$NUKEDIR_SCRIPT" -qn "$test_dir"
+  assert_success
+}
+
+@test "nukedir combined short options with trailing arg-taking option (-nri 1)" {
+  # The combined-flag splitter on line 149 must correctly split -nri 1 into
+  # -n -r -i 1. This covers the arg-taking option (-i) at the end of the group.
+  skip_if_no_ionice
+
+  local -- test_dir
+  test_dir=$(create_test_dir "combined_with_arg" 5 1)
+
+  run sudo "$NUKEDIR_SCRIPT" -nri 1 "$test_dir"
+  assert_success
+  assert_output_contains "DRY_RUN"
+  # Verify both ionice AND rsync verbose took effect
+  assert_output_contains "-avn"
+  assert_output_contains "ionice"
+}
+
+@test "nukedir -- marks end of options" {
+  local -- test_dir
+  test_dir=$(create_test_dir "end_of_options" 5 1)
+
+  run sudo "$NUKEDIR_SCRIPT" -n -- "$test_dir"
+  assert_success
+  assert_output_contains "$test_dir"
+  assert_output_contains "DRY_RUN"
+}
+
+@test "nukedir -- allows dash-prefixed directory names" {
+  local -- test_dir="$TEST_TEMP_DIR/-weird-prefix"
+  mkdir -p "$test_dir"
+  echo "content" > "$test_dir/file.txt"
+
+  run sudo "$NUKEDIR_SCRIPT" -n -- "$test_dir"
+  assert_success
+  assert_output_contains "$test_dir"
+}
+
+@test "nukedir RSYNC_WAIT_SECONDS env var is consumed" {
+  # The default is 60s, but we just need to verify the var is readable.
+  # The value is only used inside the --wait-for-rsync loop, which we cannot
+  # easily trigger without a live rsync. But we can confirm the script starts
+  # cleanly with a custom value set.
+  local -- test_dir
+  test_dir=$(create_test_dir "rsync_wait_env" 3 1)
+
+  run sudo RSYNC_WAIT_SECONDS=5 "$NUKEDIR_SCRIPT" -n "$test_dir"
   assert_success
 }

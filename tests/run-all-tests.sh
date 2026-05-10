@@ -209,35 +209,35 @@ EOF
   # Run requested tests
   case "$run_mode" in
     unit)
-      run_test_category "unit" || ((total_failed++))
+      run_test_category "unit" || ((++total_failed))
       ;;
 
     integration)
-      run_test_category "integration" || ((total_failed++))
+      run_test_category "integration" || ((++total_failed))
       ;;
 
     safety)
-      run_test_category "safety" || ((total_failed++))
+      run_test_category "safety" || ((++total_failed))
       ;;
 
     performance)
       if [[ -z "${PERF_TESTS:-}" ]]; then
         warn "Performance tests skipped (set PERF_TESTS=1 to enable)"
       else
-        run_test_category "performance" || ((total_failed++))
+        run_test_category "performance" || ((++total_failed))
       fi
       ;;
 
     all)
-      run_test_category "unit" || ((total_failed++))
+      run_test_category "unit" || ((++total_failed))
       echo
-      run_test_category "integration" || ((total_failed++))
+      run_test_category "integration" || ((++total_failed))
       echo
-      run_test_category "safety" || ((total_failed++))
+      run_test_category "safety" || ((++total_failed))
       echo
 
       if [[ -n "${PERF_TESTS:-}" ]]; then
-        run_test_category "performance" || ((total_failed++))
+        run_test_category "performance" || ((++total_failed))
         echo
       else
         info "Performance tests skipped (set PERF_TESTS=1 to enable)"

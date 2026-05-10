@@ -244,5 +244,23 @@ teardown() {
   assert_output_contains "BITBIN="
   [[ ! -d "$test_dir" ]]
 
-  # BITBIN itself should be cleaned up (can't easily verify as it's temporary)
+  # Extract the BITBIN path from output and verify it was cleaned up by the
+  # EXIT trap in cleanup().
+  local -- bitbin_path
+  bitbin_path=$(grep -o 'BITBIN=[^ ]*' <<<"$output" | head -1 | cut -d= -f2)
+  [[ -n "$bitbin_path" ]]
+  [[ ! -e "$bitbin_path" ]]
+}
+
+@test "nukedir BITBIN cleanup runs even on early exit (dryrun)" {
+  local -- test_dir
+  test_dir=$(create_test_dir "bitbin_dryrun_cleanup" 5 1)
+
+  run sudo "$NUKEDIR_SCRIPT" --dryrun --verbose "$test_dir"
+  assert_success
+
+  local -- bitbin_path
+  bitbin_path=$(grep -o 'BITBIN=[^ ]*' <<<"$output" | head -1 | cut -d= -f2)
+  [[ -n "$bitbin_path" ]]
+  [[ ! -e "$bitbin_path" ]]
 }

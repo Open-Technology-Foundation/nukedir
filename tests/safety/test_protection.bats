@@ -120,10 +120,9 @@ teardown() {
   local -- nonexistent="$TEST_TEMP_DIR/does_not_exist"
 
   run sudo "$NUKEDIR_SCRIPT" -N -q "$nonexistent"
-  # Should successfully handle non-existent directory (realpath reports error)
+  # Should successfully handle non-existent directory (logged, skipped via continue)
   assert_success
-  # realpath outputs error message
-  [[ "$output" == *"realpath"* ]] || [[ "$output" == *"No such file"* ]]
+  assert_output_contains "is not a directory"
 }
 
 @test "nukedir handles permission denied gracefully" {
